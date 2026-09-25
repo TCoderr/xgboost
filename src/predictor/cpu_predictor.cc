@@ -395,36 +395,35 @@ template <std::size_t kBlockOfRowsSize, typename DataView>
 void PredictBatchByBlockKernel(DataView const &batch, HostModel const &model,
                                ThreadTmp<kBlockOfRowsSize> *p_fvec, std::int32_t n_threads,
                                bool any_missing, linalg::TensorView<float, 2> out_predt,
-                               common::OptionalWeights tree_weights) {
+                               common::OptionalWeights tree_weights,
+                               common::Span<ArrayTreeLayout const> layouts = {}) {
   auto &fvec = *p_fvec;
   // Parallel over local batches
   auto const n_samples = batch.Size();
   auto const n_features = model.n_features;
 
-  /* Build the array layout of the top levels of each tree once per prediction batch.
-   * The layouts are required only for the ArrayLayout optimization, so we don't need
-   * them if kBlockOfRowsSize == 1. They are equally unused when every block has size 1
-   * (n_samples <= 1): DispatchArrayLayout only reads them when block_size > 1. Building
-   * them walks every node of every tree, which would otherwise dominate single-row
-   * inplace prediction.
+  /* Use layouts supplied by a caller with a longer lifetime when available.  Other
+   * prediction paths retain the existing per-batch construction behavior.
    */
-  std::vector<ArrayTreeLayout> layouts;
-  if constexpr (kBlockOfRowsSize > 1) {
-    if (n_samples > 1) {
-      layouts.resize(model.tree_end - model.tree_begin);
-      CHECK_EQ(layouts.size(), model.Trees().size());
-      common::ParallelFor(model.tree_end - model.tree_begin, n_threads, [&](auto i) {
-        std::visit([&](auto &&tree) { layouts[i].Build(tree); }, model.Trees()[i]);
-      });
+  std::vector<ArrayTreeLayout> local_layouts;
+  if (layouts.empty()) {
+    if constexpr (kBlockOfRowsSize > 1) {
+      if (n_samples > 1) {
+        local_layouts.resize(model.tree_end - model.tree_begin);
+        CHECK_EQ(local_layouts.size(), model.Trees().size());
+        common::ParallelFor(model.tree_end - model.tree_begin, n_threads, [&](auto i) {
+          std::visit([&](auto &&tree) { local_layouts[i].Build(tree); }, model.Trees()[i]);
+        });
+      }
     }
+    layouts = common::Span<ArrayTreeLayout const>{local_layouts.data(), local_layouts.size()};
   }
-  auto s_layouts = common::Span<ArrayTreeLayout const>{layouts.data(), layouts.size()};
   common::ParallelFor1d<kBlockOfRowsSize>(n_samples, n_threads, [&](auto &&block) {
     auto fvec_tloc = fvec.ThreadBuffer(block.Size());
 
     batch.FVecFill(block, n_features, fvec_tloc);
     DispatchArrayLayout(model, block.begin() + batch.base_rowid, fvec_tloc, block.Size(), out_predt,
-                        s_layouts, any_missing, tree_weights);
+                        layouts, any_missing, tree_weights);
     batch.FVecDrop(fvec_tloc);
   });
 }
@@ -526,9 +525,23 @@ class CPUPredictor : public Predictor {
     LaunchPredict(this->ctx_, p_fmat, model, [&](auto &&policy) {
       using Policy = common::GetValueT<decltype(policy)>;
       ThreadTmp<Policy::kBlockOfRowsSize> feat_vecs{n_threads};
+
+      std::vector<ArrayTreeLayout> layouts;
+      if constexpr (Policy::kBlockOfRowsSize > 1) {
+        if (n_samples > 1) {
+          layouts.resize(h_model.tree_end - h_model.tree_begin);
+          CHECK_EQ(layouts.size(), h_model.Trees().size());
+          common::ParallelFor(h_model.tree_end - h_model.tree_begin, n_threads, [&](auto i) {
+            std::visit([&](auto &&tree) { layouts[i].Build(tree); }, h_model.Trees()[i]);
+          });
+        }
+      }
+      auto s_layouts = common::Span<ArrayTreeLayout const>{layouts.data(), layouts.size()};
+
       policy.ForEachBatch([&](auto &&batch) {
-        PredictBatchByBlockKernel<Policy::kBlockOfRowsSize>(batch, h_model, &feat_vecs, n_threads,
-                                                            any_missing, out_predt, tree_weights);
+        PredictBatchByBlockKernel<Policy::kBlockOfRowsSize>(
+            batch, h_model, &feat_vecs, n_threads, any_missing, out_predt, tree_weights,
+            s_layouts);
       });
     });
   }
