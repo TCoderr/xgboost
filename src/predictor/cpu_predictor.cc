@@ -540,8 +540,7 @@ class CPUPredictor : public Predictor {
 
       policy.ForEachBatch([&](auto &&batch) {
         PredictBatchByBlockKernel<Policy::kBlockOfRowsSize>(
-            batch, h_model, &feat_vecs, n_threads, any_missing, out_predt, tree_weights,
-            s_layouts);
+            batch, h_model, &feat_vecs, n_threads, any_missing, out_predt, tree_weights, s_layouts);
       });
     });
   }
