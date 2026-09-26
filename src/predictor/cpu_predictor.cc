@@ -198,6 +198,42 @@ void PredictBlockByAllTrees(HostModel const &model, std::size_t const predict_of
   }
 }
 
+/**
+ * @brief Predict one row with all trees without the per-tree visitor used by the block kernel.
+ */
+template <bool has_missing>
+void PredictRowByAllTrees(HostModel const &model, std::size_t const predict_offset,
+                          common::Span<RegTree::FVec> fvec_tloc,
+                          linalg::MatrixView<float> out_predt,
+                          common::OptionalWeights tree_weights) {
+  CHECK_EQ(fvec_tloc.size(), 1);
+  auto const &feat = fvec_tloc.front();
+  auto trees = model.Trees();
+
+  for (bst_tree_t tree_id = 0, n_trees = trees.size(); tree_id < n_trees; ++tree_id) {
+    auto const weight = tree_weights[tree_id];
+
+    if (auto const *p_tree = std::get_if<tree::ScalarTreeView>(&trees[tree_id])) {
+      auto const &tree = *p_tree;
+      auto const &cats = tree.GetCategoriesMatrix();
+      auto const leaf = tree.HasCategoricalSplit()
+                            ? GetLeafIndex<has_missing, true>(tree, feat, cats, RegTree::kRoot)
+                            : GetLeafIndex<has_missing, false>(tree, feat, cats, RegTree::kRoot);
+      auto const gid = model.tree_groups[tree_id];
+      out_predt(predict_offset, gid) += tree.LeafValue(leaf) * weight;
+    } else {
+      auto const &tree = std::get<tree::MultiTargetTreeView>(trees[tree_id]);
+      if (tree.HasCategoricalSplit()) {
+        multi::PredValueByOneTree<true, true, false>(tree, predict_offset, fvec_tloc, 1, out_predt,
+                                                     nullptr, 0, weight);
+      } else {
+        multi::PredValueByOneTree<false, true, false>(tree, predict_offset, fvec_tloc, 1, out_predt,
+                                                      nullptr, 0, weight);
+      }
+    }
+  }
+}
+
 // Dispatch between template implementations
 void DispatchArrayLayout(HostModel const &model, std::size_t const predict_offset,
                          common::Span<RegTree::FVec> fvec_tloc, std::size_t const block_size,
@@ -228,6 +264,12 @@ void DispatchArrayLayout(HostModel const &model, std::size_t const predict_offse
     } else {
       PredictBlockByAllTrees<true, false>(model, predict_offset, fvec_tloc, block_size, out_predt,
                                           tree_depth, tree_weights);
+    }
+  } else if (block_size == 1) {
+    if (fvec_tloc.front().HasMissing()) {
+      PredictRowByAllTrees<true>(model, predict_offset, fvec_tloc, out_predt, tree_weights);
+    } else {
+      PredictRowByAllTrees<false>(model, predict_offset, fvec_tloc, out_predt, tree_weights);
     }
   } else {
     PredictBlockByAllTrees<false, true>(model, predict_offset, fvec_tloc, block_size, out_predt,
