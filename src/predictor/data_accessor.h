@@ -80,9 +80,7 @@ class SparsePageView : public DataToFeatVec<SparsePageView<EncAccessor>> {
     constexpr std::size_t kSelectiveResetRatio = 32;
 
     if (!s_feats.empty() && s_feats.front().Size() < kMinFeaturesForSelectiveReset) {
-      for (auto& feats : s_feats) {
-        feats.Drop();
-      }
+      DataToFeatVec<SparsePageView<EncAccessor>>::FVecDrop(block, s_feats);
       return;
     }
 
