@@ -425,7 +425,7 @@ void PredictBatchByBlockKernel(DataView const &batch, HostModel const &model,
     batch.FVecFill(block, n_features, fvec_tloc);
     DispatchArrayLayout(model, block.begin() + batch.base_rowid, fvec_tloc, block.Size(), out_predt,
                         tree_depth, any_missing, tree_weights);
-    batch.FVecDrop(fvec_tloc);
+    batch.FVecDrop(block, fvec_tloc);
   });
 }
 
@@ -458,7 +458,7 @@ void PredictLeafCPU(Context const *ctx, DMatrix *p_fmat, HostDeviceVector<float>
               h_model.Trees()[j]);
           preds[ridx * ntree_limit + j] = static_cast<float>(nidx);
         }
-        batch.FVecDrop(fvec_tloc);
+        batch.FVecDrop(block, fvec_tloc);
       });
     });
   });

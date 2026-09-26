@@ -43,7 +43,7 @@ struct DataToFeatVec {
     }
   }
   // Clear the feature vector.
-  static void FVecDrop(common::Span<RegTree::FVec> s_feats) {
+  void FVecDrop(common::Range1d const&, common::Span<RegTree::FVec> s_feats) const {
     auto p_feats = s_feats.data();
     for (size_t i = 0, n = s_feats.size(); i < n; ++i) {
       p_feats[i].Drop();
@@ -73,6 +73,35 @@ class SparsePageView : public DataToFeatVec<SparsePageView<EncAccessor>> {
     }
 
     return view_[ridx].size();
+  }
+
+  void FVecDrop(common::Range1d const& block, common::Span<RegTree::FVec> s_feats) const {
+    constexpr std::size_t kMinFeaturesForSelectiveReset = 8192;
+    constexpr std::size_t kSelectiveResetRatio = 32;
+
+    if (!s_feats.empty() && s_feats.front().Size() < kMinFeaturesForSelectiveReset) {
+      for (auto& feats : s_feats) {
+        feats.Drop();
+      }
+      return;
+    }
+
+    auto const missing = std::numeric_limits<float>::quiet_NaN();
+    for (std::size_t i = 0; i < block.Size(); ++i) {
+      auto& feats = s_feats[i];
+      auto const row = view_[block.begin() + i];
+
+      if (row.size() > feats.Size() / kSelectiveResetRatio) {
+        feats.Drop();
+        continue;
+      }
+
+      auto data = feats.Data();
+      for (auto const& entry : row) {
+        data[entry.index] = missing;
+      }
+      feats.HasMissing(true);
+    }
   }
 };
 
