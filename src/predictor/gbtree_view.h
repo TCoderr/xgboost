@@ -3,9 +3,10 @@
  */
 #pragma once
 
-#include <mutex>    // for mutex, lock_guard
-#include <utility>  // for move
-#include <vector>   // for vector
+#include <algorithm>  // for max
+#include <mutex>      // for mutex, lock_guard
+#include <utility>    // for move
+#include <vector>     // for vector
 
 #include "../gbm/gbtree_model.h"  // for GBTreeModel
 #include "../tree/tree_view.h"    // for MultiTargetTreeView, ScalarTreeView
@@ -47,6 +48,7 @@ class GBTreeModelView {
     std::lock_guard guard{model.Mutex()};
     // Create tree views.
     std::vector<TreeViewVar> trees;
+    trees.reserve(std::max(this->tree_end - this->tree_begin, 0));
     for (bst_tree_t tree_idx = this->tree_begin; tree_idx < this->tree_end; ++tree_idx) {
       auto const& p_tree = model.trees[tree_idx];
       if (p_tree->IsMultiTarget()) {
