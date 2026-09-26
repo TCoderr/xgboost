@@ -61,16 +61,41 @@ using Vec = std::vector<T, std::allocator<T>>;
 // the context is a CUDA context.
 using HostModel = GBTreeModelView<Vec, TreeViewVar, CopyViews>;
 
+inline bst_node_t NextNodeMasked(RegTree::Node const &node, float fvalue) {
+  std::int32_t const left = node.LeftChild();
+  std::int32_t const right = node.RightChild();
+
+  std::int32_t const next = left + static_cast<std::int32_t>(!(fvalue < node.SplitCond()));
+
+  std::int32_t const default_left_mask = -static_cast<std::int32_t>(node.DefaultLeft());
+  std::int32_t const default_child = right ^ ((left ^ right) & default_left_mask);
+
+  std::int32_t const missing_mask = -static_cast<std::int32_t>(fvalue != fvalue);
+
+  return next ^ ((default_child ^ next) & missing_mask);
+}
+
 template <bool has_missing, bool has_categorical, typename TreeView>
 bst_node_t GetLeafIndex(TreeView const &tree, const RegTree::FVec &feat,
                         RegTree::CategoricalSplitMatrix const &cats, bst_node_t nidx) {
-  while (!tree.IsLeaf(nidx)) {
-    bst_feature_t split_index = tree.SplitIndex(nidx);
-    auto fvalue = feat.GetFvalue(split_index);
-    nidx = GetNextNode<has_missing, has_categorical>(
-        tree, nidx, fvalue, has_missing && feat.IsMissing(split_index), cats);
+  if constexpr (has_missing && !has_categorical && tree::IsScalarTree<TreeView>()) {
+    auto const *nodes = tree.nodes;
+
+    while (!nodes[nidx].IsLeaf()) {
+      auto const &node = nodes[nidx];
+      auto const fvalue = feat.GetFvalue(node.SplitIndex());
+      nidx = NextNodeMasked(node, fvalue);
+    }
+    return nidx;
+  } else {
+    while (!tree.IsLeaf(nidx)) {
+      bst_feature_t split_index = tree.SplitIndex(nidx);
+      auto fvalue = feat.GetFvalue(split_index);
+      nidx = GetNextNode<has_missing, has_categorical>(
+          tree, nidx, fvalue, has_missing && feat.IsMissing(split_index), cats);
+    }
+    return nidx;
   }
-  return nidx;
 }
 }  // namespace
 
